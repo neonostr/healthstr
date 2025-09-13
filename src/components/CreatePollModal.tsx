@@ -12,6 +12,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Plus, X } from "lucide-react";
+import { useNostr } from "@/context/NostrContext";
 
 const healthCategories = [
   "Supplements", "Nutrition", "Exercise", "Mental Health", "Sleep", 
@@ -42,14 +43,21 @@ const CreatePollModal = () => {
     setOptions(newOptions);
   };
 
-  const handleSubmit = () => {
-    // Here you would integrate with Nostr to publish the poll
-    console.log("Creating poll:", { question, options, category: selectedCategory });
-    setIsOpen(false);
-    // Reset form
-    setQuestion("");
-    setOptions(["", ""]);
-    setSelectedCategory("");
+  const { publishPoll, connect, connected } = useNostr();
+
+  const handleSubmit = async () => {
+    if (!connected) {
+      await connect();
+      if (!connected) return;
+    }
+    const cleanOptions = options.map(o => o.trim()).filter(Boolean);
+    const id = await publishPoll({ question: question.trim(), options: cleanOptions, category: selectedCategory || undefined });
+    if (id) {
+      setIsOpen(false);
+      setQuestion("");
+      setOptions(["", ""]);
+      setSelectedCategory("");
+    }
   };
 
   const isValid = question.trim() && options.every(opt => opt.trim()) && selectedCategory;
@@ -57,7 +65,7 @@ const CreatePollModal = () => {
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
       <DialogTrigger asChild>
-        <Button className="bg-health-primary hover:bg-health-primary/90">
+        <Button id="create-poll-trigger" className="bg-health-primary hover:bg-health-primary/90">
           <Plus className="h-4 w-4 mr-2" />
           Create Poll
         </Button>

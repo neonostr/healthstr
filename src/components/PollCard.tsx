@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { MessageCircle, TrendingUp, Users } from "lucide-react";
 import { useState } from "react";
+import { useNostr } from "@/context/NostrContext";
 
 interface PollOption {
   id: string;
@@ -22,6 +23,7 @@ interface PollCardProps {
 }
 
 const PollCard = ({ 
+  id,
   question, 
   options, 
   totalVotes, 
@@ -30,12 +32,19 @@ const PollCard = ({
   timeAgo, 
   comments 
 }: PollCardProps) => {
-  const [selectedOption, setSelectedOption] = useState<string | null>(null);
+  const { voteOnPoll, connected, connect } = useNostr();
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [hasVoted, setHasVoted] = useState(false);
 
-  const handleVote = (optionId: string) => {
-    setSelectedOption(optionId);
+  const handleVote = async (choiceIndex: number) => {
+    setSelectedIndex(choiceIndex);
     setHasVoted(true);
+    try {
+      if (!connected) await connect();
+      await voteOnPoll(id, choiceIndex);
+    } catch (e) {
+      // noop, errors are toasted by context
+    }
   };
 
   const getPercentage = (votes: number) => {
@@ -58,13 +67,13 @@ const PollCard = ({
       </CardHeader>
       
       <CardContent className="space-y-3">
-        {options.map((option) => (
+        {options.map((option, idx) => (
           <div key={option.id} className="space-y-2">
             {!hasVoted ? (
               <Button
                 variant="outline"
-                className="w-full h-auto p-3 text-left justify-start hover:bg-health-primary/5 hover:border-health-primary/30 transition-all duration-200"
-                onClick={() => handleVote(option.id)}
+                className="w-full h-auto p-3 text-left justify-start hover:bg-health-primary/5 hover;border-health-primary/30 transition-all duration-200"
+                onClick={() => handleVote(idx)}
               >
                 {option.text}
               </Button>
@@ -81,7 +90,7 @@ const PollCard = ({
                        transform: `scaleX(${getPercentage(option.votes) / 100})`,
                        transition: 'transform 1s ease-out'
                      }} />
-                {selectedOption === option.id && (
+                {selectedIndex === idx && (
                   <div className="absolute inset-0 bg-health-secondary/20 origin-left"
                        style={{ 
                          transform: `scaleX(${getPercentage(option.votes) / 100})`,
