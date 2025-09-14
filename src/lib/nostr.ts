@@ -47,23 +47,24 @@ export const signEvent = async (event: Omit<NostrEvent, "id" | "sig" | "pubkey">
 };
 
 export const publishEvent = async (event: NostrEvent): Promise<void> => {
-  // In nostr-tools v2, SimplePool.publish returns a single Pub instance
-  // that emits events for all relays. Resolve on first ok/seen, reject on first failed.
-  const pub: any = pool.publish(RELAYS, event as any);
-  await new Promise<void>((resolve, reject) => {
-    let settled = false;
-    const done = (fn: () => void) => {
-      if (!settled) {
-        settled = true;
-        fn();
-      }
-    };
-    pub.on?.("ok", () => done(resolve));
-    pub.on?.("seen", () => done(resolve));
-    pub.on?.("failed", (reason: any) => done(() => reject(new Error(String(reason)))));
-    // Fallback timeout in case no relays respond
-    setTimeout(() => done(() => resolve()), 5000);
-  });
+  // In nostr-tools v2 SimplePool.publish returns an iterable of Promises.
+  // Resolve when any relay accepts the event.
+  const results = pool.publish(RELAYS, event as any) as Iterable<Promise<void>>;
+  const arr = Array.from(results);
+  if (arr.length === 0) return;
+  if (typeof (Promise as any).any === "function") {
+    await (Promise as any).any(arr);
+  } else {
+    await new Promise<void>((resolve, reject) => {
+      let rejected = 0;
+      arr.forEach(p => p.then(() => resolve()).catch(() => {
+        rejected++;
+        if (rejected === arr.length) reject(new Error("All relays failed to accept event"));
+      }));
+      // Timeout as a safety net to avoid hanging forever
+      setTimeout(() => resolve(), 5000);
+    });
+  }
 };
 
 export type ParsedPoll = {
