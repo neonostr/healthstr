@@ -46,8 +46,37 @@ export const NostrProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const unsigned = buildPollEvent({ question, options, category });
       const signed = await signEvent(unsigned);
       await publishEvent(signed);
-      toast({ title: "Poll published" });
-      return signed.id ?? null;
+      const eventId = signed.id;
+      toast({ 
+        title: "Poll published successfully! 🎉", 
+        description: (
+          <div className="space-y-2">
+            <p className="text-sm">Event ID: <code className="bg-muted px-1 rounded text-xs">{eventId}</code></p>
+            <div className="flex flex-col gap-1">
+              <p className="text-xs text-muted-foreground">Verify on:</p>
+              <div className="flex gap-2">
+                <a 
+                  href={`https://nostrexplorer.com/e/${eventId}`} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-xs text-blue-600 hover:underline"
+                >
+                  Nostr Explorer
+                </a>
+                <a 
+                  href={`https://nostr.band/e/${eventId}`} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-xs text-blue-600 hover:underline"
+                >
+                  Nostr.Band
+                </a>
+              </div>
+            </div>
+          </div>
+        )
+      });
+      return eventId ?? null;
     } catch (e: any) {
       toast({ title: "Failed to publish poll", description: e?.message ?? String(e) });
       return null;
