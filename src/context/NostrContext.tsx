@@ -56,20 +56,20 @@ export const NostrProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               <p className="text-xs text-muted-foreground">Verify on:</p>
               <div className="flex gap-2">
                 <a 
-                  href={`https://nostrexplorer.com/e/${eventId}`} 
+                  href={`https://njump.me/e/${eventId}`} 
                   target="_blank" 
                   rel="noopener noreferrer"
-                  className="text-xs text-blue-600 hover:underline"
+                  className="text-xs text-primary hover:underline"
                 >
-                  Nostr Explorer
+                  njump
                 </a>
                 <a 
                   href={`https://nostr.band/e/${eventId}`} 
                   target="_blank" 
                   rel="noopener noreferrer"
-                  className="text-xs text-blue-600 hover:underline"
+                  className="text-xs text-primary hover:underline"
                 >
-                  Nostr.Band
+                  nostr.band
                 </a>
               </div>
             </div>

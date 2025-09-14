@@ -20,6 +20,7 @@ export const RELAYS: string[] = [
   "wss://relay.snort.social",
   "wss://eden.nostr.land",
   "wss://nostr.wine",
+  "wss://relayable.org",
 ];
 
 export const pool = new SimplePool();
@@ -109,7 +110,8 @@ export const fetchPollsByAuthors = async (authors: string[], limit = 50): Promis
 };
 
 export const buildPollEvent = (args: { question: string; options: string[]; category?: string }): Omit<NostrEvent, "id" | "sig" | "pubkey"> => {
-  const tags: string[][] = [["t", "health"], ["k", "poll"]];
+  const d = `${Math.floor(Date.now() / 1000)}-${Math.random().toString(36).slice(2, 10)}`;
+  const tags: string[][] = [["d", d], ["t", "health"], ["k", "poll"]];
   if (args.category) tags.push(["category", args.category]);
   args.options.forEach((opt) => tags.push(["option", opt]));
   return {
