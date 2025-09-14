@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useMemo, useState } from "react";
-import { hasNip07, getPublicKey as getPk, npubFromHex, buildPollEvent, signEvent, publishEvent, voteOnPoll as vote, RELAYS } from "@/lib/nostr";
+import { hasNip07, getPublicKey as getPk, npubFromHex, buildPollEvent, signEvent, publishEvent, voteOnPoll as vote, RELAYS, parsePollEvent, pool } from "@/lib/nostr";
 import { toast } from "@/components/ui/use-toast";
 
 export type NostrContextType = {
@@ -76,6 +76,13 @@ export const NostrProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           </div>
         )
       });
+      // Broadcast locally so the feed can update immediately
+      try {
+        const parsed = parsePollEvent(signed);
+        if (parsed) {
+          window.dispatchEvent(new CustomEvent("poll-created", { detail: parsed }));
+        }
+      } catch {}
       return eventId ?? null;
     } catch (e: any) {
       toast({ title: "Failed to publish poll", description: e?.message ?? String(e) });

@@ -1,72 +1,87 @@
+import { useEffect, useMemo, useState } from "react";
 import PollCard from "./PollCard";
 import { Badge } from "@/components/ui/badge";
 import { Filter, TrendingUp } from "lucide-react";
+import { fetchGlobalPolls, fetchVotesForPoll, npubFromHex, timeAgo, type ParsedPoll } from "@/lib/nostr";
 
-// Mock data for demonstration
-const mockPolls = [
-  {
-    id: "1",
-    question: "Which magnesium supplement form do you find most effective for sleep quality?",
-    options: [
-      { id: "1a", text: "Magnesium Glycinate", votes: 45 },
-      { id: "1b", text: "Magnesium Oxide", votes: 12 },
-      { id: "1c", text: "Magnesium Citrate", votes: 28 },
-      { id: "1d", text: "Magnesium L-Threonate", votes: 15 }
-    ],
-    totalVotes: 100,
-    category: "Supplements",
-    author: "healthseeker.npub",
-    timeAgo: "2h",
-    comments: 23
-  },
-  {
-    id: "2", 
-    question: "What's your preferred method for tracking daily protein intake?",
-    options: [
-      { id: "2a", text: "MyFitnessPal app", votes: 67 },
-      { id: "2b", text: "Manual food diary", votes: 23 },
-      { id: "2c", text: "Don't track", votes: 45 },
-      { id: "2d", text: "Other app", votes: 18 }
-    ],
-    totalVotes: 153,
-    category: "Nutrition",
-    author: "fitnessguru.npub", 
-    timeAgo: "4h",
-    comments: 31
-  },
-  {
-    id: "3",
-    question: "How many hours of sleep do you typically get per night?",
-    options: [
-      { id: "3a", text: "Less than 6 hours", votes: 34 },
-      { id: "3b", text: "6-7 hours", votes: 89 },
-      { id: "3c", text: "7-8 hours", votes: 156 },
-      { id: "3d", text: "More than 8 hours", votes: 43 }
-    ],
-    totalVotes: 322,
-    category: "Sleep",
-    author: "sleepcoach.npub",
-    timeAgo: "6h", 
-    comments: 67
-  },
-  {
-    id: "4",
-    question: "Which meditation app has helped you the most with stress management?",
-    options: [
-      { id: "4a", text: "Headspace", votes: 78 },
-      { id: "4b", text: "Calm", votes: 92 },
-      { id: "4c", text: "Insight Timer", votes: 54 },
-      { id: "4d", text: "Don't use apps", votes: 38 }
-    ],
-    totalVotes: 262,
-    category: "Mental Health",
-    author: "mindfulness.npub",
-    timeAgo: "8h",
-    comments: 45
-  }
-];
+interface UIPollOption {
+  id: string;
+  text: string;
+  votes: number;
+}
+interface UIPoll {
+  id: string;
+  question: string;
+  options: UIPollOption[];
+  totalVotes: number;
+  category: string;
+  author: string;
+  timeAgo: string;
+  comments: number;
+  created_at: number;
+}
+
+const toUIPoll = (p: ParsedPoll): UIPoll => ({
+  id: p.id,
+  question: p.question,
+  options: p.options.map((text, idx) => ({ id: `${p.id}-${idx}` , text, votes: 0 })),
+  totalVotes: 0,
+  category: p.category ?? "General",
+  author: npubFromHex(p.authorPubkey).slice(0, 12) + "…",
+  timeAgo: timeAgo(p.created_at),
+  comments: 0,
+  created_at: p.created_at,
+});
 
 const PollFeed = () => {
+  const [polls, setPolls] = useState<UIPoll[]>([]);
+  const sorted = useMemo(() => polls.sort((a, b) => b.created_at - a.created_at), [polls]);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const parsed = await fetchGlobalPolls(30);
+        if (!alive) return;
+        const ui = parsed.map(toUIPoll);
+        setPolls(ui);
+        // Fetch votes in background and update
+        parsed.forEach(async (p, idx) => {
+          try {
+            const counts = await fetchVotesForPoll(p.id);
+            if (!alive) return;
+            setPolls((prev) => {
+              const next = [...prev];
+              const i = next.findIndex((x) => x.id === p.id);
+              if (i >= 0) {
+                const total = counts.reduce((a, b) => a + b, 0);
+                next[i] = {
+                  ...next[i],
+                  options: next[i].options.map((opt, j) => ({ ...opt, votes: counts[j] ?? 0 })),
+                  totalVotes: total,
+                };
+              }
+              return next;
+            });
+          } catch {}
+        });
+      } catch {}
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  // Listen to locally-created polls and prepend immediately
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<ParsedPoll>;
+      const parsed = ce.detail;
+      if (!parsed) return;
+      setPolls((prev) => [toUIPoll(parsed), ...prev]);
+    };
+    window.addEventListener("poll-created", handler as EventListener);
+    return () => window.removeEventListener("poll-created", handler as EventListener);
+  }, []);
+
   return (
     <section className="py-12">
       <div className="container">
@@ -78,19 +93,16 @@ const PollFeed = () => {
               Trending
             </Badge>
           </div>
-          
           <div className="flex items-center space-x-2">
             <Filter className="h-4 w-4 text-muted-foreground" />
             <span className="text-sm text-muted-foreground">Global Feed</span>
           </div>
         </div>
-        
         <div className="grid gap-6">
-          {mockPolls.map((poll) => (
+          {sorted.map((poll) => (
             <PollCard key={poll.id} {...poll} />
           ))}
         </div>
-        
         <div className="text-center mt-12">
           <p className="text-muted-foreground mb-4">
             Connect your Nostr key to see personalized feeds from people you follow
