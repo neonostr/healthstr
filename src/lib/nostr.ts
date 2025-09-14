@@ -21,6 +21,9 @@ export const RELAYS: string[] = [
   "wss://eden.nostr.land",
   "wss://nostr.wine",
   "wss://relayable.org",
+  "wss://nostr.fmt.wiz.biz",
+  "wss://no.str.cr",
+  "wss://nostr.mom",
 ];
 
 export const pool = new SimplePool();
@@ -48,24 +51,49 @@ export const signEvent = async (event: Omit<NostrEvent, "id" | "sig" | "pubkey">
 };
 
 export const publishEvent = async (event: NostrEvent): Promise<void> => {
-  // In nostr-tools v2 SimplePool.publish returns an iterable of Promises.
-  // Resolve when any relay accepts the event.
-  const results = pool.publish(RELAYS, event as any) as Iterable<Promise<void>>;
-  const arr = Array.from(results);
-  if (arr.length === 0) return;
-  if (typeof (Promise as any).any === "function") {
-    await (Promise as any).any(arr);
-  } else {
-    await new Promise<void>((resolve, reject) => {
-      let rejected = 0;
-      arr.forEach(p => p.then(() => resolve()).catch(() => {
-        rejected++;
-        if (rejected === arr.length) reject(new Error("All relays failed to accept event"));
-      }));
-      // Timeout as a safety net to avoid hanging forever
-      setTimeout(() => resolve(), 5000);
-    });
+  try {
+    // In nostr-tools v2 SimplePool.publish returns an iterable of Promises.
+    // Resolve when any relay accepts the event.
+    const results = (pool as any).publish(RELAYS, event as any) as Iterable<Promise<void>> | any;
+    const arr = Array.isArray(results) ? results : (results && typeof results[Symbol.iterator] === 'function' ? Array.from(results) : []);
+    console.log("[nostr] publishEvent", { id: event.id, kind: event.kind, relays: RELAYS, promises: arr.length });
+    if (arr.length === 0) {
+      // Some pool implementations may return a single promise
+      if (results && typeof results.then === 'function') {
+        await results;
+        return;
+      }
+      // No feedback possible, fire-and-forget
+      return;
+    }
+    if (typeof (Promise as any).any === "function") {
+      await (Promise as any).any(arr);
+    } else {
+      await new Promise<void>((resolve, reject) => {
+        let rejected = 0;
+        arr.forEach((p: Promise<any>) => p.then(() => resolve()).catch(() => {
+          rejected++;
+          if (rejected === arr.length) reject(new Error("All relays failed to accept event"));
+        }));
+        // Timeout as a safety net to avoid hanging forever
+        setTimeout(() => resolve(), 5000);
+      });
+    }
+  } catch (err) {
+    console.error("[nostr] publishEvent error", err);
+    throw err;
   }
+};
+
+export const confirmEventSeen = async (id: string, attempts = 5, delayMs = 1000): Promise<boolean> => {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const events = await (pool as any).list(RELAYS, [{ ids: [id], limit: 1 }] as any);
+      if (events && events.length > 0) return true;
+    } catch {}
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return false;
 };
 
 export type ParsedPoll = {

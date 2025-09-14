@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useMemo, useState } from "react";
-import { hasNip07, getPublicKey as getPk, npubFromHex, buildPollEvent, signEvent, publishEvent, voteOnPoll as vote, RELAYS, parsePollEvent, pool } from "@/lib/nostr";
+import { hasNip07, getPublicKey as getPk, npubFromHex, buildPollEvent, signEvent, publishEvent, voteOnPoll as vote, RELAYS, parsePollEvent, pool, confirmEventSeen } from "@/lib/nostr";
 import { toast } from "@/components/ui/use-toast";
 
 export type NostrContextType = {
@@ -81,6 +81,13 @@ export const NostrProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const parsed = parsePollEvent(signed);
         if (parsed) {
           window.dispatchEvent(new CustomEvent("poll-created", { detail: parsed }));
+        }
+      } catch {}
+      // Verify propagation on relays (non-blocking feedback)
+      try {
+        const ok = await confirmEventSeen(eventId!);
+        if (!ok) {
+          toast({ title: "Poll not yet seen by relays", description: "It may take a moment to propagate. Try the links above or retry.", variant: "destructive" as any });
         }
       } catch {}
       return eventId ?? null;
