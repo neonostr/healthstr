@@ -53,55 +53,69 @@ export const signEvent = async (event: Omit<NostrEvent, "id" | "sig" | "pubkey">
 export const publishEvent = async (event: NostrEvent): Promise<void> => {
   try {
     console.log("[nostr] Publishing event:", { id: event.id, kind: event.kind, tags: event.tags });
-    
-    const publishResults = pool.publish(RELAYS, event as any);
-    console.log("[nostr] Publish results type:", typeof publishResults);
-    
-    // Handle both array and iterable results
-    let promiseArray: Promise<any>[] = [];
-    
-    if (Array.isArray(publishResults)) {
-      promiseArray = publishResults;
-    } else if (publishResults && typeof publishResults[Symbol.iterator] === 'function') {
-      promiseArray = Array.from(publishResults as Iterable<Promise<any>>);
-    } else if (publishResults && typeof (publishResults as any).then === 'function') {
-      // Single promise case
-      await (publishResults as any);
-      console.log("[nostr] Event published successfully (single promise)");
-      return;
-    } else {
-      console.warn("[nostr] Unknown publish result format, proceeding with fire-and-forget");
+
+    const pubs: any = (pool as any).publish(RELAYS, event as any);
+
+    // Normalize to array of Pub-like objects with .on()
+    const pubArray: any[] = Array.isArray(pubs)
+      ? pubs
+      : pubs && typeof pubs[Symbol.iterator] === 'function'
+        ? Array.from(pubs)
+        : pubs
+        ? [pubs]
+        : [];
+
+    // If no pubs returned, nothing we can wait for (fire-and-forget)
+    if (pubArray.length === 0) {
+      console.warn("[nostr] No Pub objects returned from pool.publish; continuing");
       return;
     }
-    
-    console.log("[nostr] Number of relay promises:", promiseArray.length);
-    
-    if (promiseArray.length === 0) {
-      console.warn("[nostr] No relay promises returned");
-      return;
-    }
-    
-    // Wait for at least one relay to accept
-    let successCount = 0;
-    let errorCount = 0;
-    
-    await Promise.allSettled(promiseArray.map(async (promise, index) => {
-      try {
-        await promise;
-        successCount++;
-        console.log(`[nostr] Relay ${index} accepted event`);
-      } catch (err) {
-        errorCount++;
-        console.warn(`[nostr] Relay ${index} rejected event:`, err);
-      }
-    }));
-    
-    console.log(`[nostr] Publishing complete: ${successCount} success, ${errorCount} errors`);
-    
-    if (successCount === 0) {
-      throw new Error(`All ${errorCount} relays rejected the event`);
-    }
-    
+
+    await new Promise<void>((resolve, reject) => {
+      let settledOk = false;
+      let failed = 0;
+      const total = pubArray.length;
+      const timeout = setTimeout(() => {
+        if (!settledOk) {
+          console.warn("[nostr] Publish timed out waiting for relay ACKs");
+          resolve();
+        }
+      }, 6000);
+
+      const onOk = () => {
+        if (!settledOk) {
+          settledOk = true;
+          clearTimeout(timeout);
+          resolve();
+        }
+      };
+      const onFail = () => {
+        failed++;
+        if (failed >= total && !settledOk) {
+          clearTimeout(timeout);
+          reject(new Error("All relays failed to accept event"));
+        }
+      };
+
+      pubArray.forEach((pub, i) => {
+        try {
+          if (pub && typeof pub.on === 'function') {
+            pub.on('ok', onOk);
+            pub.on('seen', onOk);
+            pub.on('failed', (reason: any) => {
+              console.warn(`[nostr] Relay ${i} failed:`, reason);
+              onFail();
+            });
+          } else {
+            console.warn(`[nostr] Unexpected pub object at index ${i}`);
+            onFail();
+          }
+        } catch (err) {
+          console.warn(`[nostr] Error attaching listeners to pub ${i}:`, err);
+          onFail();
+        }
+      });
+    });
   } catch (err) {
     console.error("[nostr] publishEvent error:", err);
     throw err;
@@ -134,7 +148,8 @@ export const parsePollEvent = (e: any): ParsedPoll | null => {
     .filter((t) => t[0] === "option" && t[1])
     .map((t) => t[1]);
   if (options.length < 2) return null;
-  const category = (e.tags as string[][]).find((t) => t[0] === "category")?.[1];
+  const category = (e.tags as string[][]).find((t) => t[0] === "t")?.[1]
+    ?? (e.tags as string[][]).find((t) => t[0] === "category")?.[1];
   return {
     id: e.id,
     question: e.content,
