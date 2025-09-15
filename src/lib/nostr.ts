@@ -28,6 +28,21 @@ export const RELAYS: string[] = [
 
 export const pool = new SimplePool();
 
+export const getWriteRelays = async (): Promise<string[]> => {
+  try {
+    const nostr = (window as any).nostr;
+    const relaysObj = await nostr?.getRelays?.();
+    if (relaysObj && typeof relaysObj === 'object') {
+      const urls = Object.entries(relaysObj)
+        .filter(([, conf]: any) => conf && conf.write === true)
+        .map(([url]) => url as string);
+      const merged = Array.from(new Set([...(urls as string[]), ...RELAYS]));
+      return merged.slice(0, 12);
+    }
+  } catch {}
+  return RELAYS;
+};
+
 export const hasNip07 = () => typeof (window as any).nostr !== "undefined";
 
 export const getPublicKey = async (): Promise<string> => {
@@ -47,14 +62,22 @@ export const npubFromHex = (pubkey: string): string => {
 export const signEvent = async (event: Omit<NostrEvent, "id" | "sig" | "pubkey">): Promise<NostrEvent> => {
   const nostr = (window as any).nostr;
   if (!nostr?.signEvent) throw new Error("NIP-07 signEvent not available");
-  return await nostr.signEvent(event);
+  // Ensure pubkey is present before signing for maximum relay compatibility
+  let pubkey: string | undefined;
+  try { pubkey = await getPublicKey(); } catch {}
+  const eventWithPubkey: any = pubkey ? { ...event, pubkey } : event;
+  const signed = await nostr.signEvent(eventWithPubkey);
+  if (!signed.pubkey && pubkey) signed.pubkey = pubkey;
+  return signed;
 };
 
 export const publishEvent = async (event: NostrEvent): Promise<void> => {
   try {
     console.log("[nostr] Publishing event:", { id: event.id, kind: event.kind, tags: event.tags });
 
-    const pubs: any = (pool as any).publish(RELAYS, event as any);
+    const relays = await getWriteRelays();
+    console.log("[nostr] Using relays:", relays);
+    const pubs: any = (pool as any).publish(relays, event as any);
 
     // Normalize to array of Pub-like objects with .on()
     const pubArray: any[] = Array.isArray(pubs)

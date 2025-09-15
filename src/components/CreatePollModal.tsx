@@ -48,7 +48,6 @@ const CreatePollModal = () => {
   const handleSubmit = async () => {
     if (!connected) {
       await connect();
-      if (!connected) return;
     }
     const cleanOptions = options.map(o => o.trim()).filter(Boolean);
     const id = await publishPoll({ question: question.trim(), options: cleanOptions, category: selectedCategory || undefined });
