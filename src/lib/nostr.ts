@@ -52,35 +52,58 @@ export const signEvent = async (event: Omit<NostrEvent, "id" | "sig" | "pubkey">
 
 export const publishEvent = async (event: NostrEvent): Promise<void> => {
   try {
-    // In nostr-tools v2 SimplePool.publish returns an iterable of Promises.
-    // Resolve when any relay accepts the event.
-    const results = (pool as any).publish(RELAYS, event as any) as Iterable<Promise<void>> | any;
-    const arr = Array.isArray(results) ? results : (results && typeof results[Symbol.iterator] === 'function' ? Array.from(results) : []);
-    console.log("[nostr] publishEvent", { id: event.id, kind: event.kind, relays: RELAYS, promises: arr.length });
-    if (arr.length === 0) {
-      // Some pool implementations may return a single promise
-      if (results && typeof results.then === 'function') {
-        await results;
-        return;
-      }
-      // No feedback possible, fire-and-forget
+    console.log("[nostr] Publishing event:", { id: event.id, kind: event.kind, tags: event.tags });
+    
+    const publishResults = pool.publish(RELAYS, event as any);
+    console.log("[nostr] Publish results type:", typeof publishResults);
+    
+    // Handle both array and iterable results
+    let promiseArray: Promise<any>[] = [];
+    
+    if (Array.isArray(publishResults)) {
+      promiseArray = publishResults;
+    } else if (publishResults && typeof publishResults[Symbol.iterator] === 'function') {
+      promiseArray = Array.from(publishResults as Iterable<Promise<any>>);
+    } else if (publishResults && typeof (publishResults as any).then === 'function') {
+      // Single promise case
+      await (publishResults as any);
+      console.log("[nostr] Event published successfully (single promise)");
+      return;
+    } else {
+      console.warn("[nostr] Unknown publish result format, proceeding with fire-and-forget");
       return;
     }
-    if (typeof (Promise as any).any === "function") {
-      await (Promise as any).any(arr);
-    } else {
-      await new Promise<void>((resolve, reject) => {
-        let rejected = 0;
-        arr.forEach((p: Promise<any>) => p.then(() => resolve()).catch(() => {
-          rejected++;
-          if (rejected === arr.length) reject(new Error("All relays failed to accept event"));
-        }));
-        // Timeout as a safety net to avoid hanging forever
-        setTimeout(() => resolve(), 5000);
-      });
+    
+    console.log("[nostr] Number of relay promises:", promiseArray.length);
+    
+    if (promiseArray.length === 0) {
+      console.warn("[nostr] No relay promises returned");
+      return;
     }
+    
+    // Wait for at least one relay to accept
+    let successCount = 0;
+    let errorCount = 0;
+    
+    await Promise.allSettled(promiseArray.map(async (promise, index) => {
+      try {
+        await promise;
+        successCount++;
+        console.log(`[nostr] Relay ${index} accepted event`);
+      } catch (err) {
+        errorCount++;
+        console.warn(`[nostr] Relay ${index} rejected event:`, err);
+      }
+    }));
+    
+    console.log(`[nostr] Publishing complete: ${successCount} success, ${errorCount} errors`);
+    
+    if (successCount === 0) {
+      throw new Error(`All ${errorCount} relays rejected the event`);
+    }
+    
   } catch (err) {
-    console.error("[nostr] publishEvent error", err);
+    console.error("[nostr] publishEvent error:", err);
     throw err;
   }
 };
@@ -138,9 +161,9 @@ export const fetchPollsByAuthors = async (authors: string[], limit = 50): Promis
 };
 
 export const buildPollEvent = (args: { question: string; options: string[]; category?: string }): Omit<NostrEvent, "id" | "sig" | "pubkey"> => {
-  const d = `${Math.floor(Date.now() / 1000)}-${Math.random().toString(36).slice(2, 10)}`;
-  const tags: string[][] = [["d", d], ["t", "health"], ["k", "poll"]];
-  if (args.category) tags.push(["category", args.category]);
+  const d = `poll-${Math.floor(Date.now() / 1000)}-${Math.random().toString(36).slice(2, 8)}`;
+  const tags: string[][] = [["d", d]];
+  if (args.category) tags.push(["t", args.category]);
   args.options.forEach((opt) => tags.push(["option", opt]));
   return {
     kind: 30001,

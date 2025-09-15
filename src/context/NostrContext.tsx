@@ -83,13 +83,23 @@ export const NostrProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           window.dispatchEvent(new CustomEvent("poll-created", { detail: parsed }));
         }
       } catch {}
-      // Verify propagation on relays (non-blocking feedback)
-      try {
-        const ok = await confirmEventSeen(eventId!);
-        if (!ok) {
-          toast({ title: "Poll not yet seen by relays", description: "It may take a moment to propagate. Try the links above or retry.", variant: "destructive" as any });
+      // Wait briefly then verify event exists on relays
+      setTimeout(async () => {
+        try {
+          const ok = await confirmEventSeen(eventId!);
+          if (!ok) {
+            toast({ 
+              title: "Warning: Poll may not have propagated", 
+              description: "The poll was published but not yet visible on all relays. This is normal and should resolve shortly.",
+              variant: "destructive" as any 
+            });
+          } else {
+            console.log("[nostr] Event confirmed on relays");
+          }
+        } catch (err) {
+          console.warn("[nostr] Failed to confirm event on relays:", err);
         }
-      } catch {}
+      }, 2000);
       return eventId ?? null;
     } catch (e: any) {
       toast({ title: "Failed to publish poll", description: e?.message ?? String(e) });
