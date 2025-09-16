@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useMemo, useState } from "react";
-import { hasNip07, getPublicKey as getPk, npubFromHex, buildPollEvent, signEvent, publishEvent, voteOnPoll as vote, RELAYS, parsePollEvent, pool, confirmEventSeen } from "@/lib/nostr";
+import { hasNip07, getNip07PublicKey as getPk, npubFromHex, buildPollEvent, signEvent, publishEvent, voteOnPoll as vote, RELAYS, parsePollEvent, pool, confirmEventSeen } from "@/lib/nostr";
 import { toast } from "@/components/ui/use-toast";
 
 export type NostrContextType = {
