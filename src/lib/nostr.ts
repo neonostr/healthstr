@@ -1,19 +1,16 @@
 // Nostr utility functions and SimplePool setup
-// Minimal types to avoid tight coupling with nostr-tools internal types
-export type NostrEvent = {
-  id?: string;
+
+import { SimplePool } from "nostr-tools/pool";
+import { nip19, finalizeEvent, getPublicKey } from "nostr-tools";
+import type { Event } from "nostr-tools";
+
+export type NostrEvent = Event & {
   kind: number;
-  pubkey?: string;
-  created_at: number;
   content: string;
   tags: string[][];
-  sig?: string;
 };
 
-// Import only what we need from nostr-tools
-import { SimplePool } from "nostr-tools/pool";
-import { nip19 } from "nostr-tools";
-
+// Default relays
 export const RELAYS: string[] = [
   "wss://relay.damus.io",
   "wss://nos.lol",
@@ -32,7 +29,7 @@ export const getWriteRelays = async (): Promise<string[]> => {
   try {
     const nostr = (window as any).nostr;
     const relaysObj = await nostr?.getRelays?.();
-    if (relaysObj && typeof relaysObj === 'object') {
+    if (relaysObj && typeof relaysObj === "object") {
       const urls = Object.entries(relaysObj)
         .filter(([, conf]: any) => conf && conf.write === true)
         .map(([url]) => url as string);
@@ -45,99 +42,83 @@ export const getWriteRelays = async (): Promise<string[]> => {
 
 export const hasNip07 = () => typeof (window as any).nostr !== "undefined";
 
-export const getPublicKey = async (): Promise<string> => {
+export const getNip07PublicKey = async (): Promise<string> => {
   const nostr = (window as any).nostr;
-  if (!nostr) throw new Error("NIP-07 provider not found. Please install/enable a Nostr extension.");
+  if (!nostr) {
+    throw new Error("NIP-07 provider not found. Please install/enable a Nostr extension.");
+  }
   return await nostr.getPublicKey();
 };
 
 export const npubFromHex = (pubkey: string): string => {
   try {
     return nip19.npubEncode(pubkey);
-  } catch (e) {
+  } catch {
     return pubkey;
   }
 };
 
-export const signEvent = async (event: Omit<NostrEvent, "id" | "sig" | "pubkey">): Promise<NostrEvent> => {
+// ---- Signing ----
+
+/**
+ * Sign an event using either NIP-07 extension OR a local secret key if provided.
+ */
+export const signEvent = async (
+  event: Omit<NostrEvent, "id" | "sig" | "pubkey">,
+  sk?: string
+): Promise<NostrEvent> => {
+  if (sk) {
+    // Local signing
+    const pubkey = getPublicKey(sk);
+    return finalizeEvent({ ...event, pubkey }, sk) as NostrEvent;
+  }
+
+  // NIP-07
   const nostr = (window as any).nostr;
   if (!nostr?.signEvent) throw new Error("NIP-07 signEvent not available");
-  // Ensure pubkey is present before signing for maximum relay compatibility
-  let pubkey: string | undefined;
-  try { pubkey = await getPublicKey(); } catch {}
-  const eventWithPubkey: any = pubkey ? { ...event, pubkey } : event;
-  const signed = await nostr.signEvent(eventWithPubkey);
-  if (!signed.pubkey && pubkey) signed.pubkey = pubkey;
-  return signed;
+  const pubkey = await getNip07PublicKey();
+  const signed = await nostr.signEvent({ ...event, pubkey });
+  return signed as NostrEvent;
 };
+
+// ---- Publishing ----
 
 export const publishEvent = async (event: NostrEvent): Promise<void> => {
   try {
-    console.log("[nostr] Publishing event:", { id: event.id, kind: event.kind, tags: event.tags });
-
     const relays = await getWriteRelays();
-    console.log("[nostr] Using relays:", relays);
-    const pubs: any = (pool as any).publish(relays, event as any);
+    console.log("[nostr] Publishing event:", { id: event.id, kind: event.kind, relays });
 
-    // Normalize to array of Pub-like objects with .on()
-    const pubArray: any[] = Array.isArray(pubs)
-      ? pubs
-      : pubs && typeof pubs[Symbol.iterator] === 'function'
-        ? Array.from(pubs)
-        : pubs
-        ? [pubs]
-        : [];
-
-    // If no pubs returned, nothing we can wait for (fire-and-forget)
-    if (pubArray.length === 0) {
-      console.warn("[nostr] No Pub objects returned from pool.publish; continuing");
-      return;
-    }
+    const pub = pool.publish(relays, event);
 
     await new Promise<void>((resolve, reject) => {
-      let settledOk = false;
-      let failed = 0;
-      const total = pubArray.length;
       const timeout = setTimeout(() => {
-        if (!settledOk) {
-          console.warn("[nostr] Publish timed out waiting for relay ACKs");
-          resolve();
-        }
+        console.warn("[nostr] Publish timed out (no relay ack within 6s)");
+        resolve();
       }, 6000);
 
+      let settled = false;
+
       const onOk = () => {
-        if (!settledOk) {
-          settledOk = true;
+        if (!settled) {
+          settled = true;
           clearTimeout(timeout);
+          console.log("[nostr] ✅ Event accepted");
           resolve();
         }
       };
-      const onFail = () => {
-        failed++;
-        if (failed >= total && !settledOk) {
+
+      const onFail = (reason: any) => {
+        if (!settled) {
+          settled = true;
           clearTimeout(timeout);
-          reject(new Error("All relays failed to accept event"));
+          console.error("[nostr] ❌ All relays failed", reason);
+          reject(reason);
         }
       };
 
-      pubArray.forEach((pub, i) => {
-        try {
-          if (pub && typeof pub.on === 'function') {
-            pub.on('ok', onOk);
-            pub.on('seen', onOk);
-            pub.on('failed', (reason: any) => {
-              console.warn(`[nostr] Relay ${i} failed:`, reason);
-              onFail();
-            });
-          } else {
-            console.warn(`[nostr] Unexpected pub object at index ${i}`);
-            onFail();
-          }
-        } catch (err) {
-          console.warn(`[nostr] Error attaching listeners to pub ${i}:`, err);
-          onFail();
-        }
-      });
+      pub.on("ok", onOk);
+      pub.on("seen", onOk);
+      pub.on("failed", onFail);
     });
   } catch (err) {
     console.error("[nostr] publishEvent error:", err);
@@ -148,13 +129,15 @@ export const publishEvent = async (event: NostrEvent): Promise<void> => {
 export const confirmEventSeen = async (id: string, attempts = 5, delayMs = 1000): Promise<boolean> => {
   for (let i = 0; i < attempts; i++) {
     try {
-      const events = await (pool as any).list(RELAYS, [{ ids: [id], limit: 1 }] as any);
+      const events = await pool.list(RELAYS, [{ ids: [id], limit: 1 }]);
       if (events && events.length > 0) return true;
     } catch {}
     await new Promise((r) => setTimeout(r, delayMs));
   }
   return false;
 };
+
+// ---- Poll helpers ----
 
 export type ParsedPoll = {
   id: string;
@@ -165,14 +148,15 @@ export type ParsedPoll = {
   created_at: number;
 };
 
-export const parsePollEvent = (e: any): ParsedPoll | null => {
+export const parsePollEvent = (e: NostrEvent): ParsedPoll | null => {
   if (!e || e.kind !== 30001) return null;
   const options = (e.tags as string[][])
     .filter((t) => t[0] === "option" && t[1])
     .map((t) => t[1]);
   if (options.length < 2) return null;
-  const category = (e.tags as string[][]).find((t) => t[0] === "t")?.[1]
-    ?? (e.tags as string[][]).find((t) => t[0] === "category")?.[1];
+  const category =
+    (e.tags as string[][]).find((t) => t[0] === "t")?.[1] ??
+    (e.tags as string[][]).find((t) => t[0] === "category")?.[1];
   return {
     id: e.id,
     question: e.content,
@@ -184,21 +168,21 @@ export const parsePollEvent = (e: any): ParsedPoll | null => {
 };
 
 export const fetchGlobalPolls = async (limit = 50): Promise<ParsedPoll[]> => {
-  const events = await (pool as any).list(RELAYS, [{ kinds: [30001], limit }] as any);
-  return events
-    .map(parsePollEvent)
-    .filter(Boolean) as ParsedPoll[];
+  const events = await pool.list(RELAYS, [{ kinds: [30001], limit }]);
+  return events.map(parsePollEvent).filter(Boolean) as ParsedPoll[];
 };
 
 export const fetchPollsByAuthors = async (authors: string[], limit = 50): Promise<ParsedPoll[]> => {
   if (!authors.length) return [];
-  const events = await (pool as any).list(RELAYS, [{ kinds: [30001], authors, limit }] as any);
-  return events
-    .map(parsePollEvent)
-    .filter(Boolean) as ParsedPoll[];
+  const events = await pool.list(RELAYS, [{ kinds: [30001], authors, limit }]);
+  return events.map(parsePollEvent).filter(Boolean) as ParsedPoll[];
 };
 
-export const buildPollEvent = (args: { question: string; options: string[]; category?: string }): Omit<NostrEvent, "id" | "sig" | "pubkey"> => {
+export const buildPollEvent = (args: {
+  question: string;
+  options: string[];
+  category?: string;
+}): Omit<NostrEvent, "id" | "sig" | "pubkey"> => {
   const d = `poll-${Math.floor(Date.now() / 1000)}-${Math.random().toString(36).slice(2, 8)}`;
   const tags: string[][] = [["d", d]];
   if (args.category) tags.push(["t", args.category]);
@@ -211,20 +195,23 @@ export const buildPollEvent = (args: { question: string; options: string[]; cate
   };
 };
 
-export const voteOnPoll = async (pollId: string, choiceIndex: number): Promise<void> => {
+export const voteOnPoll = async (pollId: string, choiceIndex: number, sk?: string): Promise<void> => {
   const event: Omit<NostrEvent, "id" | "sig" | "pubkey"> = {
     kind: 30002,
     created_at: Math.floor(Date.now() / 1000),
     content: "",
-    tags: [["e", pollId], ["k", "poll_vote"], ["choice", String(choiceIndex)]],
+    tags: [
+      ["e", pollId],
+      ["k", "poll_vote"],
+      ["choice", String(choiceIndex)],
+    ],
   };
-  const signed = await signEvent(event);
+  const signed = await signEvent(event, sk);
   await publishEvent(signed);
 };
 
 export const fetchVotesForPoll = async (pollId: string): Promise<number[]> => {
-  const events = await (pool as any).list(RELAYS, [{ kinds: [30002], '#e': [pollId] }] as any);
-  // Aggregate by choice index
+  const events = await pool.list(RELAYS, [{ kinds: [30002], "#e": [pollId] }]);
   const counts: Record<number, number> = {};
   for (const e of events) {
     const choiceTag = (e.tags as string[][]).find((t) => t[0] === "choice");
@@ -235,8 +222,10 @@ export const fetchVotesForPoll = async (pollId: string): Promise<number[]> => {
   return Array.from({ length: maxIndex + 1 }, (_, i) => counts[i] ?? 0);
 };
 
+// ---- Social graph helpers ----
+
 export const fetchFollowingAuthors = async (pubkey: string): Promise<string[]> => {
-  const contacts = await (pool as any).list(RELAYS, [{ kinds: [3], authors: [pubkey], limit: 1 }] as any);
+  const contacts = await pool.list(RELAYS, [{ kinds: [3], authors: [pubkey], limit: 1 }]);
   const latest = contacts.sort((a, b) => b.created_at - a.created_at)[0];
   if (!latest) return [];
   const follows = (latest.tags as string[][]).filter((t) => t[0] === "p").map((t) => t[1]);
@@ -246,17 +235,18 @@ export const fetchFollowingAuthors = async (pubkey: string): Promise<string[]> =
 export const fetchNetworkAuthors = async (pubkey: string, maxPerFollow = 50): Promise<string[]> => {
   const follows = await fetchFollowingAuthors(pubkey);
   if (!follows.length) return [];
-  const contacts = await (pool as any).list(RELAYS, [{ kinds: [3], authors: follows, limit: 1 }] as any);
+  const contacts = await pool.list(RELAYS, [{ kinds: [3], authors: follows, limit: 1 }]);
   const second = new Set<string>();
   for (const c of contacts) {
     (c.tags as string[][]).forEach((t) => {
       if (t[0] === "p" && t[1]) second.add(t[1]);
     });
   }
-  // Combine direct + second-degree
   const combined = new Set<string>([...follows, ...Array.from(second)]);
   return Array.from(combined).slice(0, maxPerFollow);
 };
+
+// ---- Utils ----
 
 export const timeAgo = (ts: number): string => {
   const s = Math.max(1, Math.floor(Date.now() / 1000) - ts);
