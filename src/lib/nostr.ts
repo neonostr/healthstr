@@ -78,11 +78,38 @@ export const signEvent = async (
     return finalizeEvent(event as any, skBytes) as unknown as NostrEvent;
   }
 
-  // NIP-07
+  // NIP-07 with enhanced validation
   const nostr = (window as any).nostr;
-  if (!nostr?.signEvent) throw new Error("NIP-07 signEvent not available");
-  const signed = await nostr.signEvent(event);
-  return signed as NostrEvent;
+  if (!nostr?.signEvent) {
+    throw new Error("NIP-07 extension not available - please install a Nostr wallet extension");
+  }
+
+  try {
+    // Get pubkey to validate NIP-07 connection
+    const pubkey = await nostr.getPublicKey();
+    if (!pubkey) {
+      throw new Error("Failed to get public key from NIP-07 extension");
+    }
+
+    // Sign the event
+    const signedEvent = await nostr.signEvent(event);
+    
+    // Validate the signed event structure
+    if (!signedEvent.id || !signedEvent.sig || !signedEvent.pubkey) {
+      throw new Error("Invalid signed event from NIP-07 extension");
+    }
+
+    // Verify the pubkey matches
+    if (signedEvent.pubkey !== pubkey) {
+      throw new Error("Pubkey mismatch in signed event");
+    }
+
+    console.log("Successfully signed event:", signedEvent.id);
+    return signedEvent as NostrEvent;
+  } catch (error) {
+    console.error("NIP-07 signing failed:", error);
+    throw new Error(`Failed to sign event: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
 };
 
 // ---- Publishing ----
@@ -90,36 +117,47 @@ export const signEvent = async (
 export const publishEvent = async (event: NostrEvent): Promise<void> => {
   try {
     const relays = await getWriteRelays();
-    console.log("[nostr] Publishing event:", { id: event.id, kind: event.kind, relays });
+    console.log(`[nostr] Publishing event ${event.id} (kind ${event.kind}) to ${relays.length} relays:`, relays);
 
-    const pubs = pool.publish(relays, event);
-
-    const withTimeout = <T,>(p: Promise<T>, ms = 6000) =>
-      Promise.race<T>([
-        p,
-        new Promise<T>((_, reject) => setTimeout(() => reject(new Error("relay timeout")), ms)) as Promise<T>,
-      ]);
-
-    await new Promise<void>((resolve, reject) => {
-      let failures = 0;
-      const total = pubs.length;
-      const timer = setTimeout(() => reject(new Error("relay timeout")), 6000);
-      pubs.forEach((p) => {
-        withTimeout(p).then(() => {
-          clearTimeout(timer);
-          resolve();
-        }).catch(() => {
-          failures++;
-          if (failures >= total) {
-            clearTimeout(timer);
-            reject(new Error("all relays failed"));
-          }
-        });
-      });
+    const publishPromises = relays.map(async (relay) => {
+      try {
+        const pub = pool.publish([relay], event);
+        
+        // Add timeout and status tracking
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error(`Timeout publishing to ${relay}`)), 8000)
+        );
+        
+        await Promise.race([pub, timeoutPromise]);
+        console.log(`[nostr] ✓ Successfully published to ${relay}`);
+        return { relay, success: true };
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        console.error(`[nostr] ✗ Failed to publish to ${relay}:`, errorMsg);
+        return { relay, success: false, error: errorMsg };
+      }
     });
-    console.log("[nostr] ✅ Event accepted by at least one relay");
+
+    const results = await Promise.allSettled(publishPromises);
+    const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+    const failed = results.length - successful;
+
+    if (successful === 0) {
+      const failureReasons = results
+        .filter(r => r.status === 'fulfilled' && !r.value.success)
+        .map(r => r.status === 'fulfilled' ? r.value.error : 'Unknown error')
+        .slice(0, 3); // Show up to 3 specific errors
+      
+      console.error("[nostr] All relays failed. Reasons:", failureReasons);
+      throw new Error(`All ${relays.length} relays failed. Examples: ${failureReasons.join(', ')}`);
+    }
+
+    console.log(`[nostr] ✅ Event published: ${successful}/${relays.length} relays succeeded`);
+    if (failed > 0) {
+      console.warn(`[nostr] ${failed} relays failed, but event was published successfully`);
+    }
   } catch (err) {
-    console.error("[nostr] ❌ All relays failed", err);
+    console.error("[nostr] ❌ Publishing failed:", err);
     throw err;
   }
 };
@@ -147,14 +185,30 @@ export type ParsedPoll = {
 };
 
 export const parsePollEvent = (e: NostrEvent): ParsedPoll | null => {
-  if (!e || e.kind !== 30001) return null;
-  const options = (e.tags as string[][])
-    .filter((t) => t[0] === "option" && t[1])
-    .map((t) => t[1]);
+  // Support both standard kind 6969 and legacy kind 30001
+  if (!e || (e.kind !== 6969 && e.kind !== 30001)) return null;
+  
+  // Parse options - support both new and legacy formats
+  let options: string[] = [];
+  if (e.kind === 6969) {
+    // Standard format: ["poll_option", "0", "Option text"]
+    options = (e.tags as string[][])
+      .filter((t) => t[0] === "poll_option" && t[1] && t[2])
+      .sort((a, b) => parseInt(a[1]) - parseInt(b[1]))
+      .map((t) => t[2]);
+  } else {
+    // Legacy format: ["option", "Option text"]
+    options = (e.tags as string[][])
+      .filter((t) => t[0] === "option" && t[1])
+      .map((t) => t[1]);
+  }
+  
   if (options.length < 2) return null;
+  
   const category =
     (e.tags as string[][]).find((t) => t[0] === "t")?.[1] ??
     (e.tags as string[][]).find((t) => t[0] === "category")?.[1];
+  
   return {
     id: e.id,
     question: e.content,
@@ -166,13 +220,17 @@ export const parsePollEvent = (e: NostrEvent): ParsedPoll | null => {
 };
 
 export const fetchGlobalPolls = async (limit = 50): Promise<ParsedPoll[]> => {
-  const events = await pool.querySync(RELAYS, { kinds: [30001], limit } as any);
+  console.log("[nostr] Fetching global polls...");
+  // Query both standard (6969) and legacy (30001) poll kinds for compatibility
+  const events = await pool.querySync(RELAYS, { kinds: [6969, 30001], limit } as any);
+  console.log(`[nostr] Found ${events.length} poll events`);
   return (events as any[]).map(parsePollEvent).filter(Boolean) as ParsedPoll[];
 };
 
 export const fetchPollsByAuthors = async (authors: string[], limit = 50): Promise<ParsedPoll[]> => {
   if (!authors.length) return [];
-  const events = await pool.querySync(RELAYS, { kinds: [30001], authors, limit } as any);
+  // Query both standard (6969) and legacy (30001) poll kinds for compatibility
+  const events = await pool.querySync(RELAYS, { kinds: [6969, 30001], authors, limit } as any);
   return (events as any[]).map(parsePollEvent).filter(Boolean) as ParsedPoll[];
 };
 
@@ -181,12 +239,20 @@ export const buildPollEvent = (args: {
   options: string[];
   category?: string;
 }): Omit<NostrEvent, "id" | "sig" | "pubkey"> => {
-  const d = `poll-${Math.floor(Date.now() / 1000)}-${Math.random().toString(36).slice(2, 8)}`;
-  const tags: string[][] = [["d", d]];
-  if (args.category) tags.push(["t", args.category]);
-  args.options.forEach((opt) => tags.push(["option", opt]));
+  const tags: string[][] = [
+    ["t", "healthpoll"], // Health poll tag
+    ["poll_question", args.question]
+  ];
+  
+  // Add poll options in standard format: ["poll_option", "index", "text"]
+  args.options.forEach((opt, i) => tags.push(["poll_option", i.toString(), opt]));
+  
+  if (args.category) {
+    tags.push(["category", args.category]);
+  }
+
   return {
-    kind: 30001,
+    kind: 6969, // Standard Nostr poll event kind
     created_at: Math.floor(Date.now() / 1000),
     content: args.question,
     tags,
@@ -195,13 +261,12 @@ export const buildPollEvent = (args: {
 
 export const voteOnPoll = async (pollId: string, choiceIndex: number, sk?: string): Promise<void> => {
   const event: Omit<NostrEvent, "id" | "sig" | "pubkey"> = {
-    kind: 30002,
+    kind: 7, // Standard reaction/response event kind
     created_at: Math.floor(Date.now() / 1000),
-    content: "",
+    content: choiceIndex.toString(), // Include choice in content for compatibility
     tags: [
-      ["e", pollId],
-      ["k", "poll_vote"],
-      ["choice", String(choiceIndex)],
+      ["e", pollId], // Reference to the poll event
+      ["poll_response", choiceIndex.toString()], // Vote choice
     ],
   };
   const signed = await signEvent(event, sk);
@@ -209,13 +274,35 @@ export const voteOnPoll = async (pollId: string, choiceIndex: number, sk?: strin
 };
 
 export const fetchVotesForPoll = async (pollId: string): Promise<number[]> => {
-  const events = await pool.querySync(RELAYS, { kinds: [30002], "#e": [pollId] } as any);
+  // Query both standard (7) and legacy (30002) vote kinds for compatibility
+  const events = await pool.querySync(RELAYS, { kinds: [7, 30002], "#e": [pollId] } as any);
   const counts: Record<number, number> = {};
+  
   for (const e of events as any[]) {
-    const choiceTag = (e.tags as string[][]).find((t) => t[0] === "choice");
-    const idx = choiceTag ? parseInt(choiceTag[1], 10) : NaN;
-    if (!Number.isNaN(idx)) counts[idx] = (counts[idx] ?? 0) + 1;
+    let idx: number = NaN;
+    
+    // Check for standard poll_response tag (kind 7)
+    const responseTag = (e.tags as string[][]).find((t) => t[0] === "poll_response");
+    if (responseTag && responseTag[1]) {
+      idx = parseInt(responseTag[1], 10);
+    }
+    // Fall back to legacy choice tag (kind 30002)
+    else {
+      const choiceTag = (e.tags as string[][]).find((t) => t[0] === "choice");
+      if (choiceTag && choiceTag[1]) {
+        idx = parseInt(choiceTag[1], 10);
+      }
+      // Also check content as fallback for compatibility
+      else if (e.content && !isNaN(parseInt(e.content))) {
+        idx = parseInt(e.content, 10);
+      }
+    }
+    
+    if (!Number.isNaN(idx)) {
+      counts[idx] = (counts[idx] ?? 0) + 1;
+    }
   }
+  
   const maxIndex = Math.max(-1, ...Object.keys(counts).map((k) => parseInt(k, 10)));
   return Array.from({ length: maxIndex + 1 }, (_, i) => counts[i] ?? 0);
 };
