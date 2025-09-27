@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import PollCard from "./PollCard";
 import { Badge } from "@/components/ui/badge";
 import { Filter, TrendingUp } from "lucide-react";
-import { fetchGlobalPolls, fetchVotesForPoll, npubFromHex, timeAgo, type ParsedPoll } from "@/lib/nostr";
+import { fetchGlobalPolls, fetchVotesForPoll, npubFromHex, timeAgo, type ParsedPoll, fetchPollsByAuthors, fetchFollowingAuthors, fetchNetworkAuthors } from "@/lib/nostr";
+import { useNostr } from "@/context/NostrContext";
 
 interface UIPollOption {
   id: string;
@@ -36,17 +38,30 @@ const toUIPoll = (p: ParsedPoll): UIPoll => ({
 const PollFeed = () => {
   const [polls, setPolls] = useState<UIPoll[]>([]);
   const sorted = useMemo(() => polls.sort((a, b) => b.created_at - a.created_at), [polls]);
-
+  const { pubkey } = useNostr();
+  const [params] = useSearchParams();
+  const feed = (params.get("feed") as "global" | "following" | "network") || "global";
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const parsed = await fetchGlobalPolls(30);
+        let parsed: ParsedPoll[] = [];
+        if (feed === "global") {
+          parsed = await fetchGlobalPolls(30);
+        } else if (feed === "following" && pubkey) {
+          const authors = await fetchFollowingAuthors(pubkey);
+          parsed = await fetchPollsByAuthors(authors, 50);
+        } else if (feed === "network" && pubkey) {
+          const authors = await fetchNetworkAuthors(pubkey, 80);
+          parsed = await fetchPollsByAuthors(authors, 50);
+        } else {
+          parsed = await fetchGlobalPolls(30);
+        }
         if (!alive) return;
         const ui = parsed.map(toUIPoll);
         setPolls(ui);
         // Fetch votes in background and update
-        parsed.forEach(async (p, idx) => {
+        parsed.forEach(async (p) => {
           try {
             const counts = await fetchVotesForPoll(p.id);
             if (!alive) return;
@@ -68,7 +83,7 @@ const PollFeed = () => {
       } catch {}
     })();
     return () => { alive = false; };
-  }, []);
+  }, [feed, pubkey]);
 
   // Listen to locally-created polls and prepend immediately
   useEffect(() => {
@@ -95,7 +110,9 @@ const PollFeed = () => {
           </div>
           <div className="flex items-center space-x-2">
             <Filter className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm text-muted-foreground">Global Feed</span>
+            <span className="text-sm text-muted-foreground">
+              {feed === "global" ? "Global Feed" : feed === "following" ? "Following Feed" : "Network Feed"}
+            </span>
           </div>
         </div>
         <div className="grid gap-6">

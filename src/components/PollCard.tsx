@@ -2,7 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { MessageCircle, TrendingUp, Users } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNostr } from "@/context/NostrContext";
 
 interface PollOption {
@@ -36,21 +36,42 @@ const PollCard = ({
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [hasVoted, setHasVoted] = useState(false);
 
+  // Optimistic local counts
+  const [optimisticVotes, setOptimisticVotes] = useState<number[] | null>(null);
+  const [optimisticTotal, setOptimisticTotal] = useState<number | null>(null);
+
+  // Reset optimistic counts when props change
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setOptimisticVotes(null);
+    setOptimisticTotal(null);
+  }, [id, options, totalVotes]);
+
+  const displayedVotes = optimisticVotes ?? options.map(o => o.votes);
+  const displayedTotal = optimisticTotal ?? totalVotes;
+
   const handleVote = async (choiceIndex: number) => {
     setSelectedIndex(choiceIndex);
     setHasVoted(true);
     try {
       if (!connected) await connect();
       await voteOnPoll(id, choiceIndex);
+      // Optimistically update UI
+      setOptimisticVotes((prev) => {
+        const base = prev ?? options.map(o => o.votes);
+        const next = [...base];
+        next[choiceIndex] = (next[choiceIndex] ?? 0) + 1;
+        return next;
+      });
+      setOptimisticTotal((prev) => (prev ?? totalVotes) + 1);
     } catch (e) {
       // noop, errors are toasted by context
     }
   };
 
   const getPercentage = (votes: number) => {
-    return totalVotes > 0 ? Math.round((votes / totalVotes) * 100) : 0;
+    return displayedTotal > 0 ? Math.round((votes / displayedTotal) * 100) : 0;
   };
-
   return (
     <Card className="w-full shadow-soft hover:shadow-medium transition-all duration-300 bg-gradient-card">
       <CardHeader className="pb-3">
@@ -82,18 +103,18 @@ const PollCard = ({
                 <div className="flex justify-between items-center relative z-10">
                   <span className="font-medium">{option.text}</span>
                   <span className="text-sm font-semibold text-health-primary">
-                    {getPercentage(option.votes)}%
+                    {getPercentage(displayedVotes[idx] ?? 0)}%
                   </span>
                 </div>
                 <div className="absolute inset-0 bg-health-primary/10 origin-left scale-x-0 animate-pulse-glow"
                      style={{ 
-                       transform: `scaleX(${getPercentage(option.votes) / 100})`,
+                       transform: `scaleX(${getPercentage(displayedVotes[idx] ?? 0) / 100})`,
                        transition: 'transform 1s ease-out'
                      }} />
                 {selectedIndex === idx && (
                   <div className="absolute inset-0 bg-health-secondary/20 origin-left"
                        style={{ 
-                         transform: `scaleX(${getPercentage(option.votes) / 100})`,
+                         transform: `scaleX(${getPercentage(displayedVotes[idx] ?? 0) / 100})`,
                          transition: 'transform 1s ease-out'
                        }} />
                 )}
@@ -106,7 +127,7 @@ const PollCard = ({
           <div className="flex items-center space-x-4">
             <div className="flex items-center space-x-1">
               <Users className="h-4 w-4" />
-              <span>{totalVotes} votes</span>
+              <span>{displayedTotal} votes</span>
             </div>
             <div className="flex items-center space-x-1">
               <MessageCircle className="h-4 w-4" />

@@ -122,19 +122,32 @@ export const publishEvent = async (event: NostrEvent): Promise<void> => {
     const publishPromises = relays.map(async (relay) => {
       try {
         const pub = pool.publish([relay], event);
-        
-        // Add timeout and status tracking
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error(`Timeout publishing to ${relay}`)), 8000)
-        );
-        
-        await Promise.race([pub, timeoutPromise]);
+
+        // Wait for explicit ACKs with timeout
+        const ackPromise = new Promise<{ relay: string; success: true }>((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error(`Timeout publishing to ${relay}`)), 8000);
+          try {
+            (pub as any).on?.('ok', () => {
+              clearTimeout(timeout);
+              resolve({ relay, success: true });
+            });
+            (pub as any).on?.('failed', (reason: any) => {
+              clearTimeout(timeout);
+              reject(new Error(typeof reason === 'string' ? reason : 'Publish failed'));
+            });
+          } catch (e) {
+            clearTimeout(timeout);
+            reject(e instanceof Error ? e : new Error('Unknown publish error'));
+          }
+        });
+
+        const result = await ackPromise;
         console.log(`[nostr] ✓ Successfully published to ${relay}`);
-        return { relay, success: true };
+        return result;
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
         console.error(`[nostr] ✗ Failed to publish to ${relay}:`, errorMsg);
-        return { relay, success: false, error: errorMsg };
+        return { relay, success: false as const, error: errorMsg } as any;
       }
     });
 
