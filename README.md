@@ -1,4 +1,4 @@
-# Welcome to your Lovable project
+# HealthStr - Decentralized Health Polls on Nostr
 
 ## Project info
 
