@@ -37,7 +37,7 @@ const toUIPoll = (p: ParsedPoll): UIPoll => ({
 
 const PollFeed = () => {
   const [polls, setPolls] = useState<UIPoll[]>([]);
-  const sorted = useMemo(() => polls.sort((a, b) => b.created_at - a.created_at), [polls]);
+  const sorted = useMemo(() => [...polls].sort((a, b) => b.created_at - a.created_at), [polls]);
   const { pubkey } = useNostr();
   const [params] = useSearchParams();
   const feed = (params.get("feed") as "global" | "following" | "network") || "global";
@@ -46,13 +46,17 @@ const PollFeed = () => {
     (async () => {
       try {
         let parsed: ParsedPoll[] = [];
+        let allowedVoters: string[] | undefined;
+        
         if (feed === "global") {
           parsed = await fetchGlobalPolls(30);
         } else if (feed === "following" && pubkey) {
           const authors = await fetchFollowingAuthors(pubkey);
+          allowedVoters = authors;
           parsed = await fetchPollsByAuthors(authors, 50);
         } else if (feed === "network" && pubkey) {
           const authors = await fetchNetworkAuthors(pubkey, 80);
+          allowedVoters = authors;
           parsed = await fetchPollsByAuthors(authors, 50);
         } else {
           parsed = await fetchGlobalPolls(30);
@@ -60,10 +64,10 @@ const PollFeed = () => {
         if (!alive) return;
         const ui = parsed.map(toUIPoll);
         setPolls(ui);
-        // Fetch votes in background and update
+        // Fetch votes in background and update with scope
         parsed.forEach(async (p) => {
           try {
-            const counts = await fetchVotesForPoll(p.id);
+            const counts = await fetchVotesForPoll(p.id, { allowedVoters });
             if (!alive) return;
             setPolls((prev) => {
               const next = [...prev];
@@ -117,7 +121,7 @@ const PollFeed = () => {
         </div>
         <div className="grid gap-6">
           {sorted.map((poll) => (
-            <PollCard key={poll.id} {...poll} />
+            <PollCard key={poll.id} {...poll} userPubkey={pubkey} feedScope={feed} />
           ))}
         </div>
         <div className="text-center mt-12">

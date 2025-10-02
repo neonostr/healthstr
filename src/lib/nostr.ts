@@ -286,12 +286,27 @@ export const voteOnPoll = async (pollId: string, choiceIndex: number, sk?: strin
   await publishEvent(signed);
 };
 
-export const fetchVotesForPoll = async (pollId: string): Promise<number[]> => {
+export const fetchVotesForPoll = async (
+  pollId: string,
+  opts?: { allowedVoters?: string[] | Set<string> }
+): Promise<number[]> => {
   // Query both standard (7) and legacy (30002) vote kinds for compatibility
   const events = await pool.querySync(RELAYS, { kinds: [7, 30002], "#e": [pollId] } as any);
+  
+  // Filter by allowed voters if scope is specified
+  const allowedSet = opts?.allowedVoters 
+    ? (opts.allowedVoters instanceof Set ? opts.allowedVoters : new Set(opts.allowedVoters))
+    : null;
+  
+  const filteredEvents = allowedSet 
+    ? (events as any[]).filter(e => allowedSet.has(e.pubkey))
+    : (events as any[]);
+  
+  console.log(`[nostr] Counting votes for ${pollId}: ${filteredEvents.length}/${events.length} votes (scope: ${allowedSet ? 'filtered' : 'global'})`);
+  
   const counts: Record<number, number> = {};
   
-  for (const e of events as any[]) {
+  for (const e of filteredEvents) {
     let idx: number = NaN;
     
     // Check for standard poll_response tag (kind 7)

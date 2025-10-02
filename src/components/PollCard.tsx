@@ -20,6 +20,8 @@ interface PollCardProps {
   author: string;
   timeAgo: string;
   comments: number;
+  userPubkey?: string | null;
+  feedScope?: "global" | "following" | "network";
 }
 
 const PollCard = ({ 
@@ -30,29 +32,72 @@ const PollCard = ({
   category, 
   author, 
   timeAgo, 
-  comments 
+  comments,
+  userPubkey,
+  feedScope = "global"
 }: PollCardProps) => {
   const { voteOnPoll, connected, connect } = useNostr();
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [hasVoted, setHasVoted] = useState(false);
+  const [showResults, setShowResults] = useState(false);
+  const [resultScope, setResultScope] = useState<"global" | "following" | "network">(feedScope);
+  const [scopedVotes, setScopedVotes] = useState<number[] | null>(null);
+  const [scopedTotal, setScopedTotal] = useState<number | null>(null);
 
   // Optimistic local counts
   const [optimisticVotes, setOptimisticVotes] = useState<number[] | null>(null);
   const [optimisticTotal, setOptimisticTotal] = useState<number | null>(null);
 
-  // Reset optimistic counts when props change
+  // Reset states when poll id changes
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     setOptimisticVotes(null);
     setOptimisticTotal(null);
-  }, [id, options, totalVotes]);
+    setShowResults(false);
+    setHasVoted(false);
+    setScopedVotes(null);
+    setScopedTotal(null);
+    setResultScope(feedScope);
+  }, [id]);
 
-  const displayedVotes = optimisticVotes ?? options.map(o => o.votes);
-  const displayedTotal = optimisticTotal ?? totalVotes;
+  // Fetch scoped votes when result scope changes
+  useEffect(() => {
+    if (!showResults && !hasVoted) return;
+    
+    let alive = true;
+    (async () => {
+      try {
+        const { fetchVotesForPoll, fetchFollowingAuthors, fetchNetworkAuthors } = await import("@/lib/nostr");
+        let allowedVoters: string[] | undefined;
+        
+        if (resultScope === "following" && userPubkey) {
+          allowedVoters = await fetchFollowingAuthors(userPubkey);
+        } else if (resultScope === "network" && userPubkey) {
+          allowedVoters = await fetchNetworkAuthors(userPubkey, 80);
+        }
+        
+        const counts = await fetchVotesForPoll(id, { allowedVoters });
+        if (!alive) return;
+        
+        const total = counts.reduce((a, b) => a + b, 0);
+        setScopedVotes(counts);
+        setScopedTotal(total);
+      } catch (err) {
+        console.error("Failed to fetch scoped votes:", err);
+      }
+    })();
+    
+    return () => { alive = false; };
+  }, [id, resultScope, showResults, hasVoted, userPubkey]);
+
+  // Use scoped votes if available, otherwise fall back to optimistic or prop votes
+  const displayedVotes = scopedVotes ?? optimisticVotes ?? options.map(o => o.votes);
+  const displayedTotal = scopedTotal ?? optimisticTotal ?? totalVotes;
 
   const handleVote = async (choiceIndex: number) => {
     setSelectedIndex(choiceIndex);
     setHasVoted(true);
+    setShowResults(true);
     try {
       if (!connected) await connect();
       await voteOnPoll(id, choiceIndex);
@@ -72,6 +117,13 @@ const PollCard = ({
   const getPercentage = (votes: number) => {
     return displayedTotal > 0 ? Math.round((votes / displayedTotal) * 100) : 0;
   };
+
+  const handleToggleResults = () => {
+    setShowResults(!showResults);
+  };
+
+  const showResultsView = hasVoted || showResults;
+
   return (
     <Card className="w-full shadow-soft hover:shadow-medium transition-all duration-300 bg-gradient-card">
       <CardHeader className="pb-3">
@@ -88,9 +140,44 @@ const PollCard = ({
       </CardHeader>
       
       <CardContent className="space-y-3">
+        {showResultsView && (
+          <div className="flex items-center justify-end gap-2 mb-2">
+            <span className="text-xs text-muted-foreground">Scope:</span>
+            <div className="flex gap-1">
+              <Button
+                variant={resultScope === "global" ? "default" : "outline"}
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => setResultScope("global")}
+              >
+                Global
+              </Button>
+              {userPubkey && (
+                <>
+                  <Button
+                    variant={resultScope === "following" ? "default" : "outline"}
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => setResultScope("following")}
+                  >
+                    Following
+                  </Button>
+                  <Button
+                    variant={resultScope === "network" ? "default" : "outline"}
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => setResultScope("network")}
+                  >
+                    Network
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
         {options.map((option, idx) => (
           <div key={option.id} className="space-y-2">
-            {!hasVoted ? (
+            {!showResultsView ? (
               <Button
                 variant="outline"
                 className="w-full h-auto p-3 text-left justify-start hover:bg-health-primary/5 hover;border-health-primary/30 transition-all duration-200"
@@ -134,9 +221,14 @@ const PollCard = ({
               <span>{comments} comments</span>
             </div>
           </div>
-          <Button variant="ghost" size="sm" className="text-health-primary hover:text-health-primary/80">
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            className="text-health-primary hover:text-health-primary/80"
+            onClick={handleToggleResults}
+          >
             <TrendingUp className="h-4 w-4 mr-1" />
-            View Results
+            {showResults ? "Hide Results" : "View Results"}
           </Button>
         </div>
       </CardContent>
