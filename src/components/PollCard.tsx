@@ -70,16 +70,23 @@ const PollCard = ({
         const { fetchVotesForPoll, fetchFollowingAuthors, fetchNetworkAuthors } = await import("@/lib/nostr");
         let allowedVoters: string[] | undefined;
         
+        console.log(`[PollCard] Fetching votes for poll ${id.slice(0, 8)}... with scope: ${resultScope}`);
+        
         if (resultScope === "following" && userPubkey) {
           allowedVoters = await fetchFollowingAuthors(userPubkey);
+          console.log(`[PollCard] Following scope: ${allowedVoters.length} allowed voters`);
         } else if (resultScope === "network" && userPubkey) {
           allowedVoters = await fetchNetworkAuthors(userPubkey, 80);
+          console.log(`[PollCard] Network scope: ${allowedVoters.length} allowed voters`);
+        } else {
+          console.log(`[PollCard] Global scope: all voters allowed`);
         }
         
         const counts = await fetchVotesForPoll(id, { allowedVoters });
         if (!alive) return;
         
         const total = counts.reduce((a, b) => a + b, 0);
+        console.log(`[PollCard] Scoped vote counts for ${resultScope}:`, counts, `total: ${total}`);
         setScopedVotes(counts);
         setScopedTotal(total);
       } catch (err) {
@@ -148,7 +155,11 @@ const PollCard = ({
                 variant={resultScope === "global" ? "default" : "outline"}
                 size="sm"
                 className="h-7 text-xs"
-                onClick={() => setResultScope("global")}
+                onClick={() => {
+                  setScopedVotes(null);
+                  setScopedTotal(null);
+                  setResultScope("global");
+                }}
               >
                 Global
               </Button>
@@ -158,7 +169,11 @@ const PollCard = ({
                     variant={resultScope === "following" ? "default" : "outline"}
                     size="sm"
                     className="h-7 text-xs"
-                    onClick={() => setResultScope("following")}
+                    onClick={() => {
+                      setScopedVotes(null);
+                      setScopedTotal(null);
+                      setResultScope("following");
+                    }}
                   >
                     Following
                   </Button>
@@ -166,7 +181,11 @@ const PollCard = ({
                     variant={resultScope === "network" ? "default" : "outline"}
                     size="sm"
                     className="h-7 text-xs"
-                    onClick={() => setResultScope("network")}
+                    onClick={() => {
+                      setScopedVotes(null);
+                      setScopedTotal(null);
+                      setResultScope("network");
+                    }}
                   >
                     Network
                   </Button>
