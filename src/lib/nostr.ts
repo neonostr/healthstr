@@ -201,6 +201,10 @@ export const parsePollEvent = (e: NostrEvent): ParsedPoll | null => {
   // Support both standard kind 6969 and legacy kind 30001
   if (!e || (e.kind !== 6969 && e.kind !== 30001)) return null;
   
+  // Only accept polls created from our app
+  const clientTag = (e.tags as string[][]).find((t) => t[0] === "client");
+  if (!clientTag || clientTag[1] !== "health-poll-app") return null;
+  
   // Parse options - support both new and legacy formats
   let options: string[] = [];
   if (e.kind === 6969) {
@@ -232,19 +236,23 @@ export const parsePollEvent = (e: NostrEvent): ParsedPoll | null => {
   };
 };
 
-export const fetchGlobalPolls = async (limit = 50): Promise<ParsedPoll[]> => {
+export const fetchGlobalPolls = async (limit = 500): Promise<ParsedPoll[]> => {
   console.log("[nostr] Fetching global polls...");
   // Query both standard (6969) and legacy (30001) poll kinds for compatibility
   const events = await pool.querySync(RELAYS, { kinds: [6969, 30001], limit } as any);
   console.log(`[nostr] Found ${events.length} poll events`);
-  return (events as any[]).map(parsePollEvent).filter(Boolean) as ParsedPoll[];
+  const parsed = (events as any[]).map(parsePollEvent).filter(Boolean) as ParsedPoll[];
+  console.log(`[nostr] Filtered to ${parsed.length} health-poll-app polls`);
+  return parsed;
 };
 
-export const fetchPollsByAuthors = async (authors: string[], limit = 50): Promise<ParsedPoll[]> => {
+export const fetchPollsByAuthors = async (authors: string[], limit = 500): Promise<ParsedPoll[]> => {
   if (!authors.length) return [];
   // Query both standard (6969) and legacy (30001) poll kinds for compatibility
   const events = await pool.querySync(RELAYS, { kinds: [6969, 30001], authors, limit } as any);
-  return (events as any[]).map(parsePollEvent).filter(Boolean) as ParsedPoll[];
+  const parsed = (events as any[]).map(parsePollEvent).filter(Boolean) as ParsedPoll[];
+  console.log(`[nostr] Filtered to ${parsed.length} health-poll-app polls from ${authors.length} authors`);
+  return parsed;
 };
 
 export const buildPollEvent = (args: {
@@ -254,7 +262,8 @@ export const buildPollEvent = (args: {
 }): Omit<NostrEvent, "id" | "sig" | "pubkey"> => {
   const tags: string[][] = [
     ["t", "healthpoll"], // Health poll tag
-    ["poll_question", args.question]
+    ["poll_question", args.question],
+    ["client", "health-poll-app"], // Unique identifier for our app
   ];
   
   // Add poll options in standard format: ["poll_option", "index", "text"]

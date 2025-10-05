@@ -49,17 +49,17 @@ const PollFeed = () => {
         let allowedVoters: string[] | undefined;
         
         if (feed === "global") {
-          parsed = await fetchGlobalPolls(30);
+          parsed = await fetchGlobalPolls(500);
         } else if (feed === "following" && pubkey) {
           const authors = await fetchFollowingAuthors(pubkey);
           allowedVoters = authors;
-          parsed = await fetchPollsByAuthors(authors, 50);
+          parsed = await fetchPollsByAuthors(authors, 500);
         } else if (feed === "network" && pubkey) {
           const authors = await fetchNetworkAuthors(pubkey, 80);
           allowedVoters = authors;
-          parsed = await fetchPollsByAuthors(authors, 50);
+          parsed = await fetchPollsByAuthors(authors, 500);
         } else {
-          parsed = await fetchGlobalPolls(30);
+          parsed = await fetchGlobalPolls(500);
         }
         if (!alive) return;
         const ui = parsed.map(toUIPoll);
